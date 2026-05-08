@@ -1,12 +1,10 @@
 import streamlit as st
 from ultralytics import YOLO
-from PIL import Image
+from PIL import Image, ImageDraw
 import numpy as np
-import cv2
 import os
 import pandas as pd
 
-# ─── Page Config ───
 st.set_page_config(
     page_title="Skin Cancer Detection",
     page_icon="🔬",
@@ -61,21 +59,22 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ─── Title ───
 st.markdown(
     """
     <div class="hero">
       <h2 style="margin:0;">🔬 SkinGuard Multi-Model Detection</h2>
-      <p>Upload or capture a skin image and compare outputs from all three YOLO models: 8s, 9s, and 10s.</p>
+            <p>Upload or capture a skin image and compare outputs from all six YOLO models: 8s, 8m, 8l, 9s, 9m, and 10s.</p>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-# ─── Load Models ───
 MODEL_PATHS = {
     "YOLO-8s": "8s-best.pt",
+    "YOLO-8m": "8m-best.pt",
+    "YOLO-8l": "8l-best.pt",
     "YOLO-9s": "9s-best.pt",
+    "YOLO-9m": "9m-best.pt",
     "YOLO-10s": "10s-best.pt",
 }
 
@@ -90,7 +89,7 @@ def load_models(paths: dict[str, str]) -> dict[str, YOLO]:
         st.error(
             "Some model weights are missing:\n\n"
             f"{missing_text}\n\n"
-            "Please place all 3 files in the project folder, or update MODEL_PATHS."
+            "Please place all required files in the project folder, or update MODEL_PATHS."
         )
         st.stop()
 
@@ -107,13 +106,37 @@ def summarize_result(result) -> dict[str, float | int]:
         "confidence": confidence,
     }
 
+
+def render_on_original(image: Image.Image, result) -> Image.Image:
+    annotated = image.copy()
+    draw = ImageDraw.Draw(annotated)
+
+    for box in result.boxes:
+        conf_val = float(box.conf[0])
+        x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
+
+        draw.rectangle([x1, y1, x2, y2], outline="#0066ff", width=3)
+
+        label = f"{conf_val:.2%}"
+        text_bbox = draw.textbbox((x1, y1), label)
+        text_width = text_bbox[2] - text_bbox[0]
+        text_height = text_bbox[3] - text_bbox[1]
+
+        text_x1 = x1
+        text_y1 = max(0, y1 - text_height - 6)
+        text_x2 = text_x1 + text_width + 8
+        text_y2 = text_y1 + text_height + 4
+
+        draw.rectangle([text_x1, text_y1, text_x2, text_y2], fill="#0066ff")
+        draw.text((text_x1 + 4, text_y1 + 2), label, fill="white")
+
+    return annotated
+
 models = load_models(MODEL_PATHS)
 
-# ─── Fixed Inference Settings ───
 confidence = 0.50
 image_size = 512
 
-# ─── Input Source ───
 st.subheader("📷 Upload Image")
 
 image: Image.Image | None = None
@@ -123,7 +146,6 @@ uploaded = st.file_uploader(
 if uploaded is not None:
     image = Image.open(uploaded).convert("RGB")
 
-# ─── Run Detection ───
 if image is not None:
     st.divider()
     col_orig, col_summary = st.columns([1.2, 1])
@@ -133,7 +155,7 @@ if image is not None:
 
     model_outputs: dict[str, dict] = {}
 
-    with st.spinner("Running all 3 models..."):
+    with st.spinner("Running all 6 models..."):
         image_np = np.array(image)
         for model_name, model in models.items():
             results = model.predict(
@@ -143,11 +165,10 @@ if image is not None:
                 verbose=False,
             )
             result = results[0]
-            annotated_bgr = result.plot()
-            annotated_rgb = cv2.cvtColor(annotated_bgr, cv2.COLOR_BGR2RGB)
+            annotated_image = render_on_original(image, result)
             model_outputs[model_name] = {
                 "result": result,
-                "annotated": annotated_rgb,
+                "annotated": annotated_image,
                 "summary": summarize_result(result),
             }
 
@@ -175,25 +196,29 @@ if image is not None:
             int(output["summary"]["detections"])
             for output in model_outputs.values()
         )
-        st.metric("Total Detections (All Models)", total_detections)
+        st.metric(f"Total Detections (All {len(models)} Models)", total_detections)
 
     st.subheader("🧪 Model Output Comparison")
-    model_cols = st.columns(len(model_outputs))
+    model_items = list(model_outputs.items())
+    columns_per_row = 3
 
-    for col, (model_name, output) in zip(model_cols, model_outputs.items()):
-        summary = output["summary"]
-        result = output["result"]
+    for row_start in range(0, len(model_items), columns_per_row):
+        row_models = model_items[row_start : row_start + columns_per_row]
+        row_cols = st.columns(columns_per_row)
 
-        with col:
-            st.markdown(f"### {model_name}")
-            st.image(
-                output["annotated"],
-                caption=f"{model_name} Detection Result",
-                width="content",
-            )
-            m1, m2 = st.columns(2)
-            m1.metric("Detections", int(summary["detections"]))
-            m2.metric("Confidence", f"{summary['confidence']:.2%}")
+        for col, (model_name, output) in zip(row_cols, row_models):
+            summary = output["summary"]
+
+            with col:
+                st.markdown(f"### {model_name}")
+                st.image(
+                    output["annotated"],
+                    caption=f"{model_name} Detection Result",
+                    width="content",
+                )
+                m1, m2 = st.columns(2)
+                m1.metric("Detections", int(summary["detections"]))
+                m2.metric("Confidence", f"{summary['confidence']:.2%}")
 
     st.subheader("🧾 Detection Details")
     detail_tabs = st.tabs(list(model_outputs.keys()))
@@ -241,7 +266,6 @@ if image is not None:
     comparison_df = comparison_df.drop(columns=["ConfidenceValue"])
     st.dataframe(comparison_df, width="stretch", hide_index=True)
 
-    # ─── Disclaimer ───
     st.divider()
     st.caption(
         "⚠️ **Disclaimer:** This tool is for educational/research purposes only. "
