@@ -63,10 +63,6 @@ The models are evaluated using:
 ## 🧪 Dataset
 
 * Skin lesion dataset (e.g., ISIC or custom dataset)
-* Categories:
-
-  * Benign
-  * Malignant
 
 > Note: Ensure dataset is properly labeled in YOLO format.
 
